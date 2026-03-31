@@ -1,0 +1,4 @@
+*.log
+*.out
+*_build/
+*_src/

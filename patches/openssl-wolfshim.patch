@@ -1,0 +1,362 @@
+diff --git a/crypto/asn1/ameth_lib.c b/crypto/asn1/ameth_lib.c
+index 4ab246e9..6ee86e6a 100644
+--- a/crypto/asn1/ameth_lib.c
++++ b/crypto/asn1/ameth_lib.c
+@@ -129,6 +129,8 @@ const EVP_PKEY_ASN1_METHOD *EVP_PKEY_asn1_find_str(ENGINE **pe,
+         ameth = EVP_PKEY_asn1_get0(i);
+         if (ameth->pkey_flags & ASN1_PKEY_ALIAS)
+             continue;
++        /* wolfshim: ASN1_METH_STUB entries have pem_str=NULL and
++         * ASN1_PKEY_ALIAS clear (unlike upstream alias entries).  Without
++         * this guard strlen(NULL) would be undefined behaviour and the
++         * search would never match a real algorithm.  This is a correctness
++         * fix, not a defensive guard — NULL pem_str means "not findable by
++         * PEM string" and must be skipped. */
++        if (ameth->pem_str == NULL)
++            continue;
+         if ((int)strlen(ameth->pem_str) == len
+             && strncasecmp(ameth->pem_str, str, len) == 0)
+             return ameth;
+diff --git a/crypto/evp/e_aes.c b/crypto/evp/e_aes.c
+index a1d3ab90..af4eb14d 100644
+--- a/crypto/evp/e_aes.c
++++ b/crypto/evp/e_aes.c
+@@ -262,6 +262,15 @@ void gcm_ghash_avx(u64 Xi[2], const u128 Htable[16], const u8 *in,
+ #  define AES_GCM_ASM2(gctx)      (gctx->gcm.block==(block128_f)aesni_encrypt && \
+                                  gctx->gcm.ghash==gcm_ghash_avx)
+ #  undef AES_GCM_ASM2          /* minor size optimization */
++/*
++ * WOLFCRYPT_EXCLUDE: aesni_gcm_encrypt/decrypt assembly reads AES round-keys
++ * in hardware (aeskeygenassist) format, but our wolfCrypt AES_set_encrypt_key
++ * stores the key schedule in wolfCrypt's format.  Disable the assembly fast
++ * path so GCM always falls back to CRYPTO_gcm128_encrypt_ctr32 which calls
++ * aesni_ctr32_encrypt_blocks → AES_encrypt → wc_AesEncryptDirect (correct).
++ */
++#  undef  AES_GCM_ASM
++#  define AES_GCM_ASM(gctx)  0
+ # endif
+ 
+ static int aesni_init_key(EVP_CIPHER_CTX *ctx, const unsigned char *key,
+diff --git a/crypto/evp/names.c b/crypto/evp/names.c
+index 90c7b73b..287686a4 100644
+--- a/crypto/evp/names.c
++++ b/crypto/evp/names.c
+@@ -35,7 +35,12 @@ int EVP_add_digest(const EVP_MD *md)
+     int r;
+     const char *name;
+ 
++    if (md == NULL)
++        return 0;
++
+     name = OBJ_nid2sn(md->type);
++    if (name == NULL)
++        return 0;
+     r = OBJ_NAME_add(name, OBJ_NAME_TYPE_MD_METH, (const char *)md);
+     if (r == 0)
+         return 0;
+diff --git a/ssl/record/rec_layer_s3.c b/ssl/record/rec_layer_s3.c
+index 1db1712a..d4fb26cc 100644
+--- a/ssl/record/rec_layer_s3.c
++++ b/ssl/record/rec_layer_s3.c
+@@ -1483,23 +1483,25 @@ int ssl3_read_bytes(SSL *s, int type, int *recvd_type, unsigned char *buf,
+         return -1;
+     }
+ 
+-    if (s->method->version == TLS_ANY_VERSION
+-        && (s->server || rr->type != SSL3_RT_ALERT)) {
+-        /*
+-         * If we've got this far and still haven't decided on what version
+-         * we're using then this must be a client side alert we're dealing with
+-         * (we don't allow heartbeats yet). We shouldn't be receiving anything
+-         * other than a ClientHello if we are a server.
+-         */
+-        s->version = rr->rec_version;
+-        SSLfatal(s, SSL_AD_UNEXPECTED_MESSAGE, SSL_F_SSL3_READ_BYTES,
+-                 SSL_R_UNEXPECTED_MESSAGE);
+-        return -1;
+-    }
+-
+     /*-
+      * s->rlayer.handshake_fragment_len == 4  iff  rr->type == SSL3_RT_HANDSHAKE;
+      * (Possibly rr is 'empty' now, i.e. rr->length may be 0.)
++     *
++     * The original TLS_ANY_VERSION guard was here: when a server had not yet
++     * determined the protocol version (s->method->version == TLS_ANY_VERSION),
++     * it rejected every non-alert record with SSL_AD_UNEXPECTED_MESSAGE.
++     * However, it also rejected server-side *alert* records before the alert
++     * processing block below had a chance to run, so the info callback
++     * (SSL_CB_READ_ALERT) never fired and fatal alerts were silently dropped.
++     *
++     * The guard is now moved below the alert handling block (after the
++     * SSL3_RT_ALERT dispatch).  The new ordering means:
++     *   - Alerts received before version negotiation completes are parsed,
++     *     the info callback fires, and fatal alerts terminate the connection
++     *     cleanly -- matching RFC 5246 s7.2 / RFC 8446 s6 which require alert
++     *     processing at any point in the protocol.
++     *   - Non-alert, non-handshake records still hit UNEXPECTED_MESSAGE via
++     *     the relocated guard, preserving the original safety check.
+      */
+ 
+     if (SSL3_RECORD_get_type(rr) == SSL3_RT_ALERT) {
+@@ -1589,6 +1591,20 @@ int ssl3_read_bytes(SSL *s, int type, int *recvd_type, unsigned char *buf,
+         return -1;
+     }
+ 
++    if (s->method->version == TLS_ANY_VERSION
++        && (s->server || rr->type != SSL3_RT_ALERT)) {
++        /*
++         * If we've got this far and still haven't decided on what version
++         * we're using then this must be a client side alert we're dealing with
++         * (we don't allow heartbeats yet). We shouldn't be receiving anything
++         * other than a ClientHello if we are a server.
++         */
++        s->version = rr->rec_version;
++        SSLfatal(s, SSL_AD_UNEXPECTED_MESSAGE, SSL_F_SSL3_READ_BYTES,
++                 SSL_R_UNEXPECTED_MESSAGE);
++        return -1;
++    }
++
+     if ((s->shutdown & SSL_SENT_SHUTDOWN) != 0) {
+         if (SSL3_RECORD_get_type(rr) == SSL3_RT_HANDSHAKE) {
+             BIO *rbio;
+diff --git a/test/handshake_helper.c b/test/handshake_helper.c
+index 167447b2..23e4b52b 100644
+--- a/test/handshake_helper.c
++++ b/test/handshake_helper.c
+@@ -679,7 +679,8 @@ static int configure_handshake_ctx(SSL_CTX *server_ctx, SSL_CTX *server2_ctx,
+ 
+     /* The default log list includes EC keys, so CT can't work without EC. */
+ #if !defined(OPENSSL_NO_CT) && !defined(OPENSSL_NO_EC)
+-    if (!TEST_true(SSL_CTX_set_default_ctlog_list_file(client_ctx)))
++    if (extra->client.ct_validation != SSL_TEST_CT_VALIDATION_NONE
++            && !TEST_true(SSL_CTX_set_default_ctlog_list_file(client_ctx)))
+         goto err;
+     switch (extra->client.ct_validation) {
+     case SSL_TEST_CT_VALIDATION_PERMISSIVE:
+@@ -1589,9 +1590,33 @@ static HANDSHAKE_RESULT *do_handshake_internal(
+             }
+         case CLIENT_ERROR:
+             ret->result = SSL_TEST_CLIENT_FAIL;
++            /*
++             * The server may not have processed the client's alert bytes that
++             * are sitting in the BIO.  If the state machine already errored,
++             * SSL_do_handshake() returns immediately without reading anything.
++             * Bypass the state-machine guard by calling ssl_read_bytes()
++             * directly so that info_cb fires with SSL_CB_READ_ALERT and
++             * server_ex_data.alert_received is populated correctly.
++             */
++            if (client_ex_data.alert_sent != 0
++                    && server_ex_data.alert_received == 0) {
++                size_t readbytes = 0;
++                server.ssl->method->ssl_read_bytes(server.ssl, 0, NULL,
++                                                   NULL, 0, 0, &readbytes);
++            }
+             goto err;
+         case SERVER_ERROR:
+             ret->result = SSL_TEST_SERVER_FAIL;
++            /*
++             * Symmetric to CLIENT_ERROR above: when both peers have errored
++             * (server last), drain a pending server alert from the client BIO.
++             */
++            if (server_ex_data.alert_sent != 0
++                    && client_ex_data.alert_received == 0) {
++                size_t readbytes = 0;
++                client.ssl->method->ssl_read_bytes(client.ssl, 0, NULL,
++                                                   NULL, 0, 0, &readbytes);
++            }
+             goto err;
+         case INTERNAL_ERROR:
+             ret->result = SSL_TEST_INTERNAL_ERROR;
+diff --git a/test/recipes/80-test_ssl_new.t b/test/recipes/80-test_ssl_new.t
+index 3d281091..bdbea7fb 100644
+--- a/test/recipes/80-test_ssl_new.t
++++ b/test/recipes/80-test_ssl_new.t
+@@ -28,7 +28,7 @@ map { s/\^// } @conf_files if $^O eq "VMS";
+ 
+ # We hard-code the number of tests to double-check that the globbing above
+ # finds all files as expected.
+-plan tests => 30;  # = scalar @conf_srcs
++plan tests => 31;  # = scalar @conf_srcs
+ 
+ # Some test results depend on the configuration of enabled protocols. We only
+ # verify generated sources in the default configuration.
+@@ -105,6 +105,10 @@ my %skip = (
+   "25-cipher.conf" => disabled("ec") || disabled("tls1_2"),
+   "26-tls13_client_auth.conf" => disabled("tls1_3"),
+   "29-dtls-sctp-label-bug.conf" => disabled("sctp") || disabled("sock"),
++  # wolfshim alert-delivery test: requires TLS 1.1 and TLS 1.2 to be enabled
++  # so that the server can be constrained to 1.1-only and the client to 1.2-only,
++  # producing a version-mismatch alert before version negotiation completes.
++  "31-wolfshim-alert-delivery.conf" => disabled("tls1_1") || disabled("tls1_2"),
+ );
+ 
+ foreach my $conf (@conf_files) {
+diff --git a/test/ssl_test.c b/test/ssl_test.c
+index 7453a9d1..fd9edd32 100644
+--- a/test/ssl_test.c
++++ b/test/ssl_test.c
+@@ -82,6 +82,23 @@ static int check_alerts(HANDSHAKE_RESULT *result, SSL_TEST_CTX *test_ctx)
+         return 0;
+     }
+ 
++    /*
++     * ExpectedClientAlertReceived: assert that the server's info callback
++     * actually fired with the expected alert code.  This is the key assertion
++     * for the rec_layer_s3.c fix that moves the TLS_ANY_VERSION guard below
++     * the alert dispatch block so that alerts received before version
++     * negotiation completes are properly delivered to the info callback.
++     */
++    if (test_ctx->expected_client_alert_received
++        && (result->client_alert_received & 0xff)
++               != test_ctx->expected_client_alert_received) {
++        TEST_error("ClientAlertReceived mismatch: expected server to receive "
++                   "%s, but got %s.",
++                   print_alert(test_ctx->expected_client_alert_received),
++                   print_alert(result->client_alert_received));
++        return 0;
++    }
++
+     if (test_ctx->expected_server_alert
+         && (result->server_alert_sent & 0xff) != test_ctx->expected_server_alert) {
+         TEST_error("ServerAlert mismatch: expected %s, got %s.",
+diff --git a/test/ssl_test_ctx.c b/test/ssl_test_ctx.c
+index 6cdced5a..3d1f3e37 100644
+--- a/test/ssl_test_ctx.c
++++ b/test/ssl_test_ctx.c
+@@ -127,6 +127,7 @@ static const test_enum ssl_alerts[] = {
+     {"BadCertificate", SSL_AD_BAD_CERTIFICATE},
+     {"NoApplicationProtocol", SSL_AD_NO_APPLICATION_PROTOCOL},
+     {"CertificateRequired", SSL_AD_CERTIFICATE_REQUIRED},
++    {"ProtocolVersion", SSL_AD_PROTOCOL_VERSION},
+ };
+ 
+ __owur static int parse_alert(int *alert, const char *value)
+@@ -144,6 +145,12 @@ __owur static int parse_server_alert(SSL_TEST_CTX *test_ctx, const char *value)
+     return parse_alert(&test_ctx->expected_server_alert, value);
+ }
+ 
++__owur static int parse_client_alert_received(SSL_TEST_CTX *test_ctx,
++                                              const char *value)
++{
++    return parse_alert(&test_ctx->expected_client_alert_received, value);
++}
++
+ const char *ssl_alert_name(int alert)
+ {
+     return enum_name(ssl_alerts, OSSL_NELEM(ssl_alerts), alert);
+@@ -648,6 +655,7 @@ static const ssl_test_ctx_option ssl_test_ctx_options[] = {
+     { "ExpectedResult", &parse_expected_result },
+     { "ExpectedClientAlert", &parse_client_alert },
+     { "ExpectedServerAlert", &parse_server_alert },
++    { "ExpectedClientAlertReceived", &parse_client_alert_received },
+     { "ExpectedProtocol", &parse_protocol },
+     { "ExpectedServerName", &parse_expected_servername },
+     { "SessionTicketExpected", &parse_session_ticket },
+diff --git a/test/ssl_test_ctx.h b/test/ssl_test_ctx.h
+index 7e670c94..94d9d628 100644
+--- a/test/ssl_test_ctx.h
++++ b/test/ssl_test_ctx.h
+@@ -171,6 +171,8 @@ typedef struct {
+     /* See ssl.h for alert codes. */
+     /* Alert sent by the client / received by the server. */
+     int expected_client_alert;
++    /* Alert that the server is expected to have received from the client. */
++    int expected_client_alert_received;
+     /* Alert sent by the server / received by the client. */
+     int expected_server_alert;
+     /* Negotiated protocol version. 0 if no expectation. */
+diff --git a/test/ssl-tests/31-wolfshim-alert-delivery.conf.in b/test/ssl-tests/31-wolfshim-alert-delivery.conf.in
+new file mode 100644
+index 00000000..d20e2e0c
+--- /dev/null
++++ b/test/ssl-tests/31-wolfshim-alert-delivery.conf.in
+@@ -0,0 +1,49 @@
++# -*- mode: perl; -*-
++# Copyright 2026 The OpenSSL Project Authors. All Rights Reserved.
++#
++# Licensed under the OpenSSL license (the "License").  You may not use
++# this file except in compliance with the License.  You can obtain a copy
++# in the file LICENSE in the source distribution or at
++# https://www.openssl.org/source/license.html
++
++## Tests for wolfshim rec_layer_s3.c alert-delivery fix.
++##
++## Before the fix, a fatal alert sent by the client before TLS version
++## negotiation completed was silently dropped by the server because the
++## TLS_ANY_VERSION guard in ssl3_read_bytes() ran *before* the alert
++## dispatch block, causing ssl_read_bytes() to return
++## SSL_AD_UNEXPECTED_MESSAGE without ever delivering the alert to the
++## info callback.
++##
++## The fix moves the guard below the SSL3_RT_ALERT dispatch so that:
++##   - The info callback (SSL_CB_READ_ALERT) fires correctly.
++##   - server_ex_data.alert_received is populated.
++##   - ExpectedClientAlertReceived assertions pass.
++
++package ssltests;
++
++our @tests = (
++
++    # Client supports only TLS 1.2; server supports only TLS 1.1.
++    # Client proposes TLS 1.2; server responds with ServerHello indicating
++    # TLS 1.1.  Client rejects the downgrade and sends a protocol_version
++    # alert.  With the fix, the server's info callback receives this alert
++    # before the TLS_ANY_VERSION guard can discard it.
++    {
++        name => "client-protocol-version-alert-delivered-to-server",
++        server => {
++            "MinProtocol" => "TLSv1.1",
++            "MaxProtocol" => "TLSv1.1",
++        },
++        client => {
++            "MinProtocol" => "TLSv1.2",
++            "MaxProtocol" => "TLSv1.2",
++        },
++        test => {
++            "ExpectedResult"               => "ClientFail",
++            "ExpectedClientAlert"          => "ProtocolVersion",
++            "ExpectedClientAlertReceived"  => "ProtocolVersion",
++        },
++    },
++
++);
+diff --git a/test/ssl-tests/31-wolfshim-alert-delivery.conf b/test/ssl-tests/31-wolfshim-alert-delivery.conf
+new file mode 100644
+index 00000000..4eb545ab
+--- /dev/null
++++ b/test/ssl-tests/31-wolfshim-alert-delivery.conf
+@@ -0,0 +1,34 @@
++# Generated with generate_ssl_tests.pl
++
++num_tests = 1
++
++test-0 = 0-client-protocol-version-alert-delivered-to-server
++# ===========================================================
++
++[0-client-protocol-version-alert-delivered-to-server]
++ssl_conf = 0-client-protocol-version-alert-delivered-to-server-ssl
++
++[0-client-protocol-version-alert-delivered-to-server-ssl]
++server = 0-client-protocol-version-alert-delivered-to-server-server
++client = 0-client-protocol-version-alert-delivered-to-server-client
++
++[0-client-protocol-version-alert-delivered-to-server-server]
++Certificate = ${ENV::TEST_CERTS_DIR}/servercert.pem
++CipherString = DEFAULT
++MaxProtocol = TLSv1.1
++MinProtocol = TLSv1.1
++PrivateKey = ${ENV::TEST_CERTS_DIR}/serverkey.pem
++
++[0-client-protocol-version-alert-delivered-to-server-client]
++CipherString = DEFAULT
++MaxProtocol = TLSv1.2
++MinProtocol = TLSv1.2
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[test-0]
++ExpectedClientAlert = ProtocolVersion
++ExpectedClientAlertReceived = ProtocolVersion
++ExpectedResult = ClientFail
++
++

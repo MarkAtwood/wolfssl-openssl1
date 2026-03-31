@@ -1,0 +1,21 @@
+---
+# wolfSSL-only shim files: just wolfssl headers + shim/include
+# Do NOT add openssl/include — wolfSSL compat headers find openssl/asn1.h
+# and conflict with their own ASN1 type definitions.
+If:
+  PathMatch: shim/src/(?!evp/).*\.c
+CompileFlags:
+  Add:
+    - -I/home/mark/wolfssl-openssl1/shim/include
+    - -I/home/mark/wolfssl-openssl1/wolfssl
+
+---
+# EVP bridge files mix wolfSSL and OpenSSL public headers intentionally;
+# they need openssl/include for EVP_MD_meth_new etc.
+If:
+  PathMatch: shim/src/evp/.*\.c
+CompileFlags:
+  Add:
+    - -I/home/mark/wolfssl-openssl1/shim/include
+    - -I/home/mark/wolfssl-openssl1/wolfssl
+    - -I/home/mark/wolfssl-openssl1/openssl/include

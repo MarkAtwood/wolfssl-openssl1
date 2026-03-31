@@ -148,11 +148,69 @@ build_openssl() {
     cd "$ROOT"
 }
 
+# ── Step 4: shim unit tests ───────────────────────────────────────────────────
+build_tests() {
+    info "Building and running shim unit tests..."
+    cd "$ROOT"
+
+    [ -f shim/lib/libwolfshim.a ] || \
+        die "libwolfshim.a not found — run './build.sh shim' first"
+    [ -f wolfssl/src/.libs/libwolfssl.so ] || \
+        die "libwolfssl.so not found — run './build.sh wolfssl' first"
+
+    # Test binaries use OpenSSL 1.1.1 public headers (no wolfSSL macro aliasing)
+    # and link against the compiled shim + wolfSSL shared library.
+    # -Wno-deprecated-declarations: OpenSSL 1.1.1 marks AES_set_*_key, SHA1_Init,
+    # etc. as deprecated.  The shim implements these functions; tests call them
+    # by design.
+    TEST_CFLAGS=(
+        -O0 -Wall -Wno-deprecated-declarations
+        -DWOLFCRYPT_EXCLUDE
+        -I"$ROOT/wolfssl"
+        -I"$ROOT/shim/include"
+        -I"$ROOT/openssl"
+        -I"$ROOT/openssl/include"
+    )
+    TEST_LDFLAGS=(
+        -L"$ROOT/shim/lib"  -lwolfshim
+        -L"$ROOT/wolfssl/src/.libs" -lwolfssl
+        -Wl,-rpath,"$ROOT/wolfssl/src/.libs"
+        -lpthread
+    )
+
+    TEST_SRCS=(
+        shim/tests/aes_lifecycle_test.c
+        shim/tests/sha_lifecycle_test.c
+    )
+
+    local fail=0
+    for src in "${TEST_SRCS[@]}"; do
+        bin="${src%.c}"
+        info "  cc+link $src"
+        # test_stubs.c provides ERR_put_error (used by aes_shim.o error paths
+        # but not exercised by the tests); -lm satisfies pow/log referenced by
+        # wolfSSL's DH code in libwolfssl.so.
+        gcc "${TEST_CFLAGS[@]}" "$src" shim/tests/test_stubs.c \
+            -o "$bin" "${TEST_LDFLAGS[@]}" -lm
+        info "  run     $bin"
+        if "$bin"; then
+            ok "  PASS $bin"
+        else
+            printf '\033[1;31m[build]\033[0m FAIL %s\n' "$bin" >&2
+            fail=1
+        fi
+    done
+
+    [ "$fail" -eq 0 ] || die "One or more tests failed"
+    ok "All shim tests passed"
+}
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 case "$TARGET" in
     wolfssl) build_wolfssl ;;
     shim)    build_shim    ;;
     openssl) build_openssl ;;
+    tests)   build_tests   ;;
     all)
         init_submodules
         build_wolfssl

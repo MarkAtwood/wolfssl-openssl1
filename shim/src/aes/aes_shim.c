@@ -19,6 +19,9 @@
  *   HAVE_AES_KEYWRAP    — wc_AesKeyWrap_ex / wc_AesKeyUnWrap_ex
  *   WOLFSSL_AES_DIRECT  — wc_AesEncryptDirect (used as ECB fallback)
  *
+ * wolfshim extensions (not in OpenSSL 1.1.1, see aes_shim.h and RELEASE-NOTES.md):
+ *   AES_KEY_new / AES_KEY_free
+ *
  * Naming: new functions use #undef before each definition, not a wolfshim_
  * prefix. See ARCHITECTURE.md §8 for why rand_shim.c looks different.
  */
@@ -749,6 +752,34 @@ int AES_wrap_key(AES_KEY *key, const unsigned char *iv,
     (void)inlen;
     return -1;
 #endif
+}
+
+/* -----------------------------------------------------------------------
+ * AES_KEY_new / AES_KEY_free — wolfshim extensions (not in OpenSSL 1.1.1)
+ *
+ * See aes_shim.h §"wolfshim extension: AES_KEY_new / AES_KEY_free" and
+ * shim/RELEASE-NOTES.md §"wolfshim extensions" for full rationale.
+ *
+ * AES_KEY_new  — allocate and zero a heap AES_KEY; the inner wolfCrypt Aes
+ *                context is allocated lazily on the first AES_set_*_key call.
+ * AES_KEY_free — call aes_ctx_free (frees + zeros the inner wolfCrypt Aes,
+ *                clears both pointer slots), then free the outer struct.
+ *                Safe to call with NULL (no-op).
+ * ----------------------------------------------------------------------- */
+AES_KEY *AES_KEY_new(void)
+{
+    AES_KEY *key = (AES_KEY *)XMALLOC(sizeof(AES_KEY), NULL, DYNAMIC_TYPE_AES);
+    if (key)
+        memset(key, 0, sizeof(AES_KEY));
+    return key;
+}
+
+void AES_KEY_free(AES_KEY *key)
+{
+    if (!key)
+        return;
+    aes_ctx_free(key);  /* frees inner wolfCrypt Aes and zeros both pointer slots */
+    XFREE(key, NULL, DYNAMIC_TYPE_AES);
 }
 
 /* -----------------------------------------------------------------------

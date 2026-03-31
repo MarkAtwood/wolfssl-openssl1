@@ -67,13 +67,20 @@ and a magic sentinel (`WOLFSHIM_AES_CTX_MAGIC = 0x574F4C4657534844`).
 pattern in OpenSSL code) will leak one `Aes` allocation per key setup unless the
 caller explicitly calls `OPENSSL_cleanse()` (which invokes the internal
 `aes_ctx_free()` destructor hook — see §3). OpenSSL's own implementation stores the
-key schedule inline and has nothing to free; the `AES_KEY_free` function does not
-exist in the public API. This is a fundamental tension with the OpenSSL ABI that
+key schedule inline and has nothing to free; `AES_KEY_free` does not exist in the
+OpenSSL 1.1.1 public API. This is a fundamental tension with the OpenSSL ABI that
 cannot be resolved without changing the API. See `shim/include/aes_ctx.h` for the
 full accounting of the leak rate and a pointer to the migration path.
 
-**What to do if you want to fix this:** See `../README.md` §Path forward
-(project root).
+**wolfshim extension:** `AES_KEY_new()` / `AES_KEY_free()` in `aes_shim.h` and
+`aes_shim.c` provide a heap-allocation pair that eliminates the leak for callers
+willing to adopt explicit lifetime management.  These are wolfshim-specific
+extensions not present in any version of OpenSSL prior to OpenSSL 3; guard on
+`#ifdef WOLFSHIM_HAS_AES_KEY_FREE` when building against both stacks.
+See `shim/RELEASE-NOTES.md §"wolfshim extensions"` for usage guidance.
+
+**What to do if you want to fix this more broadly:** See `../README.md` §Path
+forward (project root).
 
 **Guard:** `aes_ctx_get` aborts with a detailed message if the sentinel is absent
 or the buffer appears to have been zeroed after initialization. Do not remove the
@@ -122,6 +129,15 @@ stack-allocated SHA contexts), or when the next `SHA*_Init` call on that buffer
 is preceded by a `OPENSSL_cleanse`. Stack-allocated `SHA_CTX` objects that go
 out of scope without `OPENSSL_cleanse` leak one wolfSSL context — see
 `wolfshim.supp` for the Valgrind suppression.
+
+**wolfshim extension:** `SHA_CTX_new()` / `SHA_CTX_free()`,
+`SHA256_CTX_new()` / `SHA256_CTX_free()`, and `SHA512_CTX_new()` /
+`SHA512_CTX_free()` in `sha_shim.h` and `sha_shim.c` provide a heap-allocation
+pair that eliminates the leak for callers willing to adopt explicit lifetime
+management.  These are wolfshim-specific extensions not present in any version
+of OpenSSL prior to OpenSSL 3; guard on `#ifdef WOLFSHIM_HAS_SHA_CTX_FREE`
+when building against both stacks.
+See `shim/RELEASE-NOTES.md §"wolfshim extensions"` for usage guidance.
 
 ---
 

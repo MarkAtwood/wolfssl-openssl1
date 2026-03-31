@@ -77,6 +77,55 @@ int AES_unwrap_key(AES_KEY *key, const unsigned char *iv,
                    unsigned char *out,
                    const unsigned char *in, unsigned int inlen);
 
+/* -----------------------------------------------------------------
+ * wolfshim extension: AES_KEY_new / AES_KEY_free
+ *
+ * These functions are NOT part of the OpenSSL 1.1.1 public API and
+ * do not exist in any version of OpenSSL prior to the provider model
+ * introduced in OpenSSL 3.  They are provided here because the
+ * wolfshim heap-indirection pattern (see aes_ctx.h) makes the
+ * absence of a _free function a practical liability: every stack-
+ * allocated AES_KEY leaks ~1104 bytes of wolfCrypt context when it
+ * goes out of scope without a preceding OPENSSL_cleanse() call.
+ *
+ * Background: OpenSSL's native AES_KEY stores the key schedule
+ * inline in a 244-byte struct.  There is nothing to free; the struct
+ * just goes out of scope.  wolfshim cannot store the wolfCrypt Aes
+ * struct (>1104 bytes) inline without enlarging the public struct and
+ * breaking the ABI, so it heap-allocates a wolfCrypt context and
+ * stores only a pointer + magic sentinel in the AES_KEY buffer.  The
+ * natural cleanup call (AES_KEY_free) therefore should have existed
+ * in OpenSSL 1.1.1 — it just didn't, because the native
+ * implementation had no heap allocation to free.
+ *
+ * These extensions allow callers to adopt explicit lifetime management
+ * without porting to OpenSSL 3:
+ *
+ *   // Before: stack-allocated, leaks inner wolfCrypt context
+ *   AES_KEY key;
+ *   AES_set_encrypt_key(raw, 128, &key);
+ *   AES_ecb_encrypt(in, out, &key, AES_ENCRYPT);
+ *   OPENSSL_cleanse(&key, sizeof(key));   // required with wolfshim
+ *
+ *   // After: heap-allocated, no leak
+ *   AES_KEY *key = AES_KEY_new();
+ *   AES_set_encrypt_key(raw, 128, key);
+ *   AES_ecb_encrypt(in, out, key, AES_ENCRYPT);
+ *   AES_KEY_free(key);                   // frees inner + outer
+ *
+ * Callers that must compile against both stock OpenSSL 1.1.1 (which
+ * does not define these) and this shim can guard on the macro:
+ *   #ifdef WOLFSHIM_HAS_AES_KEY_FREE
+ *     AES_KEY_free(key);
+ *   #else
+ *     OPENSSL_cleanse(key, sizeof(*key));
+ *   #endif
+ * ----------------------------------------------------------------- */
+#define WOLFSHIM_HAS_AES_KEY_FREE 1
+
+AES_KEY *AES_KEY_new(void);
+void     AES_KEY_free(AES_KEY *key);
+
 #ifdef __cplusplus
 }
 #endif

@@ -203,9 +203,22 @@ the leaked key schedules may be irrecoverable for secure erasure. Mitigations:
 - Code that reinitialises the same `AES_KEY` via another `AES_set_*_key` call —
   the previous allocation is freed before the new one is made.
 
-**Callers that must add `OPENSSL_cleanse`:** any code that declares a
-stack-allocated `AES_KEY` and returns or abandons it without one of the above.
-The pattern is:
+**wolfshim extension — preferred mitigation for new code:** use
+`AES_KEY_new()` / `AES_KEY_free()` (declared in `aes_shim.h`) to manage
+`AES_KEY` lifetime explicitly:
+
+```c
+AES_KEY *key = AES_KEY_new();
+AES_set_encrypt_key(raw, 128, key);
+/* ... use key ... */
+AES_KEY_free(key);   /* frees inner wolfCrypt context + outer struct */
+```
+
+See §"wolfshim extensions" below for compile-time guards and details.
+
+**Callers that must add `OPENSSL_cleanse` (existing code):** any code that
+declares a stack-allocated `AES_KEY` and returns or abandons it without one of
+the above.  The pattern is:
 
 ```c
 AES_KEY key;
@@ -265,8 +278,22 @@ alive after `SHA*_Final()` and reuses it on the next `SHA*_Init()` without a
 
 - **(a)** Use `EVP_MD_CTX` paths — `EVP_MD_CTX_free()` / `EVP_MD_CTX_reset()`
   call `OPENSSL_cleanse` internally.
-- **(b)** For callers that cannot switch to EVP, call `OPENSSL_cleanse` before
-  abandoning the context:
+- **(b) wolfshim extension — preferred mitigation for new code:** use
+  `SHA_CTX_new()` / `SHA_CTX_free()` (and the `SHA256` / `SHA512` variants)
+  declared in `sha_shim.h`:
+
+  ```c
+  SHA256_CTX *ctx = SHA256_CTX_new();
+  SHA256_Init(ctx);
+  /* ... */
+  SHA256_Final(digest, ctx);
+  SHA256_CTX_free(ctx);   /* frees inner wolfSSL context + outer struct */
+  ```
+
+  See §"wolfshim extensions" below for compile-time guards and details.
+
+- **(c)** For callers that cannot switch to EVP or adopt the extension, call
+  `OPENSSL_cleanse` before abandoning the context:
 
 ```c
 SHA256_CTX ctx;
@@ -278,6 +305,108 @@ OPENSSL_cleanse(&ctx, sizeof(ctx));   /* frees the wolfSSL heap context */
 
 **Valgrind:** leaks appear as `malloc ← sha*_ctx_alloc ← SHA*_Init`.
 A suppression is provided in `shim/wolfshim.supp`.
+
+---
+
+## wolfshim extensions: AES_KEY_new / AES_KEY_free / SHA_CTX_new / SHA_CTX_free (and SHA256 / SHA512)
+
+The leak problems described in the two preceding sections both stem from the same
+root cause: OpenSSL 1.1.1 has no `_free` function for `AES_KEY` or `SHA_CTX`
+because its native implementations store all state inline and have nothing to
+free.  wolfshim must heap-allocate behind these structs, making a `_free` call
+necessary — but the OpenSSL 1.1.1 API does not provide one.
+
+These extensions add the missing half of the lifecycle:
+
+| Function | Type | Notes |
+|----------|------|-------|
+| `AES_KEY_new()` | wolfshim extension | allocates + zeros a heap `AES_KEY` |
+| `AES_KEY_free(key)` | wolfshim extension | frees inner wolfCrypt `Aes` + outer struct |
+| `SHA_CTX_new()` | wolfshim extension | allocates + zeros a heap `SHA_CTX` (SHA-1) |
+| `SHA_CTX_free(ctx)` | wolfshim extension | frees inner wolfSSL SHA-1 context + outer struct |
+| `SHA256_CTX_new()` | wolfshim extension | allocates + zeros a heap `SHA256_CTX` (SHA-224/256) |
+| `SHA256_CTX_free(ctx)` | wolfshim extension | frees inner wolfSSL SHA-224/256 context + outer struct |
+| `SHA512_CTX_new()` | wolfshim extension | allocates + zeros a heap `SHA512_CTX` (SHA-384/512) |
+| `SHA512_CTX_free(ctx)` | wolfshim extension | frees inner wolfSSL SHA-384/512 context + outer struct |
+
+**Why these were not in OpenSSL 1.1.1:** OpenSSL's native `AES_KEY` stores the
+key schedule inline in 244 bytes; `SHA_CTX` stores hash state inline in 96 bytes.
+When there is no heap allocation, there is nothing to free.  The absence of a
+`_free` function is not an oversight — it is a consequence of the inline-storage
+design.  OpenSSL 3 resolved this for all context types by moving to an opaque
+provider API where every context type has a `_new` / `_free` pair.  wolfshim
+back-fills the missing half for OpenSSL 1.1.1 callers who cannot yet port to
+OpenSSL 3.
+
+**Migration path without porting to OpenSSL 3:** Replace stack allocation with
+`_new` / `_free`:
+
+```c
+/* AES — before (leaks if OPENSSL_cleanse is omitted) */
+AES_KEY key;
+AES_set_encrypt_key(raw, 128, &key);
+AES_ecb_encrypt(in, out, &key, AES_ENCRYPT);
+OPENSSL_cleanse(&key, sizeof(key));   /* required with wolfshim, easy to miss */
+
+/* AES — after (no leak, familiar lifetime model) */
+AES_KEY *key = AES_KEY_new();
+AES_set_encrypt_key(raw, 128, key);
+AES_ecb_encrypt(in, out, key, AES_ENCRYPT);
+AES_KEY_free(key);
+```
+
+```c
+/* SHA-256 — before */
+SHA256_CTX ctx;
+SHA256_Init(&ctx);
+SHA256_Update(&ctx, data, len);
+SHA256_Final(digest, &ctx);
+OPENSSL_cleanse(&ctx, sizeof(ctx));   /* required with wolfshim */
+
+/* SHA-256 — after */
+SHA256_CTX *ctx = SHA256_CTX_new();
+SHA256_Init(ctx);
+SHA256_Update(ctx, data, len);
+SHA256_Final(digest, ctx);
+SHA256_CTX_free(ctx);
+```
+
+**Building against both wolfshim and stock OpenSSL 1.1.1:** Guard on the
+compile-time feature macros that wolfshim defines:
+
+```c
+#ifdef WOLFSHIM_HAS_AES_KEY_FREE
+    AES_KEY_free(key);
+#else
+    OPENSSL_cleanse(key, sizeof(*key));
+    /* (stock OpenSSL: no heap allocation, OPENSSL_cleanse is still good practice) */
+#endif
+```
+
+```c
+#ifdef WOLFSHIM_HAS_SHA_CTX_FREE
+    SHA256_CTX_free(ctx);
+#else
+    OPENSSL_cleanse(ctx, sizeof(*ctx));
+#endif
+```
+
+The macros `WOLFSHIM_HAS_AES_KEY_FREE` and `WOLFSHIM_HAS_SHA_CTX_FREE` are
+defined in `shim/include/aes_shim.h` and `shim/include/sha_shim.h` respectively.
+
+**Declaration headers:**
+- `#include "aes_shim.h"` — declares `AES_KEY_new` / `AES_KEY_free`
+- `#include "sha_shim.h"` — declares all six SHA extension functions
+
+These headers are wolfshim-specific and are not present in stock OpenSSL.
+
+**Note on `_free` and stack-allocated contexts:** `AES_KEY_free` and
+`SHA*_CTX_free` call `free()` on the outer struct, so they must only be used
+with heap-allocated contexts (i.e., those returned by the corresponding `_new`).
+Calling them on a stack-allocated context is undefined behaviour.  For
+stack-allocated contexts, continue to use `OPENSSL_cleanse`.
+
+See `ARCHITECTURE.md` §1 and §2 for the full technical detail.
 
 ---
 

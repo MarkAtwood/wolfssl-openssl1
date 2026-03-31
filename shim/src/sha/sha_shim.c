@@ -49,6 +49,11 @@
  *     Garbage in the pointer slot without the sentinel is treated as "not
  *     initialised" and triggers a fresh malloc rather than a crash.
  *
+ * wolfshim extensions (not in OpenSSL 1.1.1, see sha_shim.h and RELEASE-NOTES.md):
+ *   SHA_CTX_new / SHA_CTX_free
+ *   SHA256_CTX_new / SHA256_CTX_free
+ *   SHA512_CTX_new / SHA512_CTX_free
+ *
  * Naming: new functions use #undef before each definition, not a wolfshim_
  * prefix. See ARCHITECTURE.md §8 for why rand_shim.c looks different.
  */
@@ -99,6 +104,8 @@
 
 /* SHA heap-pointer sentinel helpers (self-contained; includes wolfssl/openssl/sha.h internally). */
 #include "sha_ctx.h"
+/* wolfshim extension declarations (SHA_CTX_new/free etc.) */
+#include "sha_shim.h"
 
 #undef SHA1_Init
 #undef SHA1_Update
@@ -563,4 +570,76 @@ unsigned char *SHA512(const unsigned char *d, size_t n, unsigned char *md)
         free(wctx);
     }
     return ok ? out : NULL;
+}
+
+/* =========================================================================
+ * wolfshim extensions: SHA_CTX_new / SHA_CTX_free (and SHA256 / SHA512)
+ *
+ * These functions are NOT part of the OpenSSL 1.1.1 public API.
+ * See sha_shim.h and shim/RELEASE-NOTES.md §"wolfshim extensions" for the
+ * full rationale.
+ *
+ * _new:  allocate and zero a heap outer struct (sizeof SHA_CTX /
+ *        SHA256_CTX / SHA512_CTX).  The inner wolfSSL context is allocated
+ *        lazily on the first SHA*_Init call — same path as stack-allocated
+ *        contexts.  Returns NULL on allocation failure.
+ *
+ * _free: if the inner wolfSSL context pointer is live (sentinel valid),
+ *        zero and free the inner context first, then free the outer struct.
+ *        Safe to call with NULL.  Must NOT be called on a stack-allocated
+ *        SHA_CTX — use OPENSSL_cleanse(&ctx, sizeof(ctx)) for those.
+ * ========================================================================= */
+
+/* -------------------------------------------------------------------------
+ * SHA-1  (OpenSSL type: SHA_CTX)
+ * ------------------------------------------------------------------------- */
+SHA_CTX *SHA_CTX_new(void)
+{
+    return (SHA_CTX *)calloc(1, sizeof(SHA_CTX));
+}
+
+void SHA_CTX_free(SHA_CTX *ctx)
+{
+    if (!ctx)
+        return;
+    sha_ctx_free_sentinel(ctx, WOLFSHIM_SHA1_CTX_MAGIC, sizeof(WOLFSSL_SHA_CTX));
+    free(ctx);
+}
+
+/* -------------------------------------------------------------------------
+ * SHA-224 / SHA-256  (OpenSSL type: SHA256_CTX)
+ *
+ * SHA-224 and SHA-256 share the same struct type in both OpenSSL and wolfSSL.
+ * One _new/_free pair serves both variants.
+ * ------------------------------------------------------------------------- */
+SHA256_CTX *SHA256_CTX_new(void)
+{
+    return (SHA256_CTX *)calloc(1, sizeof(SHA256_CTX));
+}
+
+void SHA256_CTX_free(SHA256_CTX *ctx)
+{
+    if (!ctx)
+        return;
+    sha_ctx_free_sentinel(ctx, WOLFSHIM_SHA256_CTX_MAGIC, sizeof(WOLFSSL_SHA256_CTX));
+    free(ctx);
+}
+
+/* -------------------------------------------------------------------------
+ * SHA-384 / SHA-512  (OpenSSL type: SHA512_CTX)
+ *
+ * SHA-384 and SHA-512 share the same struct type in both OpenSSL and wolfSSL.
+ * One _new/_free pair serves both variants.
+ * ------------------------------------------------------------------------- */
+SHA512_CTX *SHA512_CTX_new(void)
+{
+    return (SHA512_CTX *)calloc(1, sizeof(SHA512_CTX));
+}
+
+void SHA512_CTX_free(SHA512_CTX *ctx)
+{
+    if (!ctx)
+        return;
+    sha_ctx_free_sentinel(ctx, WOLFSHIM_SHA512_CTX_MAGIC, sizeof(WOLFSSL_SHA512_CTX));
+    free(ctx);
 }

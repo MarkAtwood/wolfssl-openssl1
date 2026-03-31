@@ -34,30 +34,9 @@
 #include <limits.h>
 
 #ifdef WOLFSHIM_DEBUG
-# include <stdatomic.h>
 # define WOLFSHIM_LOG(name) fprintf(stderr, "[wolfshim] alias: %s called\n", name)
 #else
 # define WOLFSHIM_LOG(name) ((void)0)
-#endif
-
-#ifdef WOLFSHIM_DEBUG
-/*
- * AES context allocation counter — diagnostic only.
- *
- * Counts the total number of wolfCrypt Aes heap allocations made by
- * AES_set_encrypt_key / AES_set_decrypt_key since process start.
- * Increments on every successful key setup; does not decrement (frees via
- * OPENSSL_cleanse and AES_KEY_free happen in different code paths and TUs).
- *
- * A counter that grows monotonically and rapidly at steady state indicates
- * callers are not calling OPENSSL_cleanse or AES_KEY_free, and live wolfCrypt
- * Aes contexts are accumulating on the heap.
- *
- * To read: call wolfshim_aes_ctx_alloc_count() (declared in aes_shim.h).
- * Declared _Atomic so concurrent AES_set_*_key calls do not produce torn reads.
- */
-static _Atomic long s_aes_alloc_count = 0;
-long wolfshim_aes_ctx_alloc_count(void) { return s_aes_alloc_count; }
 #endif
 
 /* wolfSSL options must come first to enable all configured features
@@ -76,6 +55,12 @@ long wolfshim_aes_ctx_alloc_count(void) { return s_aes_alloc_count; }
 #include <wolfssl/wolfcrypt/types.h>
 /* Internal helper: heap-allocated Aes* pointer stored in the AES_KEY buffer */
 #include "aes_ctx.h"
+/* wolfshim AES extension declarations (AES_KEY_new/free, alloc counter).
+ * Must follow wolfssl/openssl/aes.h so WOLFSSL_AES_H_ is set before
+ * aes_shim.h's AES_KEY typedef guard fires — otherwise the two typedefs
+ * for AES_KEY conflict.  Provides wolfshim_aes_alloc_count_inc() prototype
+ * under WOLFSHIM_DEBUG so the compiler catches signature drift vs. aes_shim.c. */
+#include "aes_shim.h"
 /* Internal helper: heap-allocated wolfSSL SHA context stored in SHA_CTX buffers.
  * Must follow wolfssl/openssl/aes.h (which pulls in sha.h transitively via
  * wolfssl/openssl/hmac.h / ssl.h) so WOLFSSL_SHA*_CTX types are defined. */
@@ -260,8 +245,9 @@ int AES_set_encrypt_key(const unsigned char *key, int bits, AES_KEY *schedule)
      * This is not a regression: under WOLFCRYPT_EXCLUDE=1 the BSAES
      * assembly is excluded from the build entirely; the EVP AES path goes
      * through wolfCrypt directly and never reads schedule->rounds. */
+
 #ifdef WOLFSHIM_DEBUG
-    atomic_fetch_add(&s_aes_alloc_count, 1);
+    wolfshim_aes_alloc_count_inc();  /* key setup succeeded; track allocation */
 #endif
     return 0;
 }
@@ -282,8 +268,9 @@ int AES_set_decrypt_key(const unsigned char *key, int bits, AES_KEY *schedule)
         return -2;
     }
     /* See AES_set_encrypt_key comment above re: schedule->rounds. */
+
 #ifdef WOLFSHIM_DEBUG
-    atomic_fetch_add(&s_aes_alloc_count, 1);
+    wolfshim_aes_alloc_count_inc();  /* key setup succeeded; track allocation */
 #endif
     return 0;
 }

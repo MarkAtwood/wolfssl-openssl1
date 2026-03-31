@@ -73,6 +73,7 @@ build_shim() {
 
     WOLF_CFLAGS=(
         -O2 -Wall
+        -DWOLFCRYPT_EXCLUDE
         -I"$ROOT/wolfssl"
         -I"$ROOT/shim/include"
         -I"$ROOT/openssl"

@@ -167,9 +167,10 @@ static inline void sha512_ctx_set_sentinel(void *ctx)
  * slots after freeing.  ctx_size is the sizeof the wolfSSL context type
  * (passed by the caller who knows the variant).
  *
- * Called by sha_ctx_free_any with the appropriate magic/size per variant.
- * Not called directly from sha_shim.c — Init/Final never free the heap
- * context (they keep it alive for reuse; see ARCHITECTURE.md §2).
+ * Called by sha_ctx_free_any (with the appropriate magic/size per variant)
+ * and directly by sha_shim.c's SHA*_CTX_free extensions.
+ * Init/Final never call this — they keep the allocation alive for reuse
+ * (see ARCHITECTURE.md §2).
  * ----------------------------------------------------------------------- */
 static inline void sha_ctx_free_sentinel(void *ctx, void *expected_magic,
                                          size_t ctx_size)

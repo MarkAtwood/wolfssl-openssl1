@@ -38,8 +38,15 @@ typedef struct aes_key_st AES_KEY;
 #endif /* !HEADER_AES_H && !WOLFSSL_AES_H_ */
 
 /* -----------------------------------------------------------------
- * Shim function declarations — match OpenSSL 1.1.1 signatures exactly
+ * Shim function declarations — match OpenSSL 1.1.1 signatures exactly.
+ *
+ * Guard: wolfssl/openssl/aes.h and stock openssl/aes.h both declare these
+ * via macro aliases (e.g. #define AES_ecb_encrypt wolfSSL_AES_ecb_encrypt).
+ * Re-declaring them after either header causes a conflicting-types error
+ * because the macro expansion makes the name resolve to wolfSSL_AES_ecb_encrypt
+ * which is already declared.  Skip when either AES header is already in.
  * ----------------------------------------------------------------- */
+#if !defined(HEADER_AES_H) && !defined(WOLFSSL_AES_H_)
 
 const char *AES_options(void);
 
@@ -76,6 +83,8 @@ int AES_wrap_key(AES_KEY *key, const unsigned char *iv,
 int AES_unwrap_key(AES_KEY *key, const unsigned char *iv,
                    unsigned char *out,
                    const unsigned char *in, unsigned int inlen);
+
+#endif /* !HEADER_AES_H && !WOLFSSL_AES_H_ */
 
 /* -----------------------------------------------------------------
  * wolfshim extension: AES_KEY_new / AES_KEY_free
@@ -152,6 +161,10 @@ void     AES_KEY_free(AES_KEY *key);
  * ----------------------------------------------------------------- */
 #ifdef WOLFSHIM_DEBUG
 long wolfshim_aes_ctx_alloc_count(void);
+/* Internal: called from aliases.c to record each successful AES_set_*_key.
+ * Not part of the public API — declared here so the compiler can catch
+ * signature drift between the definition (aes_shim.c) and its caller. */
+void wolfshim_aes_alloc_count_inc(void);
 #else
 static inline long wolfshim_aes_ctx_alloc_count(void) { return 0; }
 #endif

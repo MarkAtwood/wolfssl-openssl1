@@ -2,7 +2,7 @@
  * sha_shim.h — wolfshim SHA API declarations including wolfshim extensions
  *
  * The standard SHA Init/Update/Final/one-shot symbols are declared through
- * <wolfssl/openssl/sha.h> (included by sha_ctx.h).  This header adds only
+ * <openssl/sha.h>.  This header adds only
  * the wolfshim extension functions that are NOT part of the OpenSSL 1.1.1 API.
  *
  * wolfshim extensions: SHA_CTX_new / SHA_CTX_free
@@ -62,11 +62,19 @@ extern "C" {
 #endif
 
 /*
- * Pull in sha_ctx.h which defines SHA_CTX, SHA256_CTX, SHA512_CTX via
- * wolfssl/openssl/sha.h.  sha_ctx.h is idempotent (include-guarded), so
- * it is safe to include here even if the caller already included it.
+ * SHA_CTX / SHA256_CTX / SHA512_CTX type definitions.
+ *
+ * sha_shim.h is a public consumer header — it must not drag in wolfSSL
+ * internals.  Include only the OpenSSL-compat SHA header, which is the
+ * same header that stock OpenSSL 1.1.1 callers already include.
+ *
+ * Guard against double-inclusion: wolfSSL's openssl/sha.h sets
+ * WOLFSSL_SHA_H_ (openssl/sha.h sets HEADER_SHA_H in stock OpenSSL).
+ * Either guard means the types are already defined.
  */
-#include "sha_ctx.h"
+#if !defined(WOLFSSL_SHA_H_) && !defined(HEADER_SHA_H)
+# include <openssl/sha.h>
+#endif
 
 /*
  * Feature guard: callers that need to conditionally enable these extensions

@@ -32,6 +32,9 @@
 #include <strings.h>  /* explicit_bzero */
 
 #include <stdio.h>  /* always needed for abort-path fprintf */
+#ifdef WOLFSHIM_DEBUG
+# include <stdatomic.h>
+#endif
 
 /* wolfCrypt headers — options.h must come first to load the build-time
  * configuration (#defines from ./configure) before any wolfCrypt struct
@@ -755,6 +758,23 @@ int AES_wrap_key(AES_KEY *key, const unsigned char *iv,
 }
 
 /* -----------------------------------------------------------------------
+ * AES context allocation counter — diagnostic only (WOLFSHIM_DEBUG builds).
+ *
+ * Defined here because aes_shim.c owns the AES_KEY_new / AES_KEY_free
+ * extensions and is the canonical home for AES heap lifecycle logic.
+ * aliases.c (which contains AES_set_encrypt_key / AES_set_decrypt_key) calls
+ * wolfshim_aes_alloc_count_inc() — a thin non-static helper — so the counter
+ * stays in one TU while the increment can happen across TU boundaries.
+ *
+ * wolfshim_aes_ctx_alloc_count() is declared in aes_shim.h.
+ * ----------------------------------------------------------------------- */
+#ifdef WOLFSHIM_DEBUG
+static _Atomic long s_aes_alloc_count = 0;
+long wolfshim_aes_ctx_alloc_count(void) { return s_aes_alloc_count; }
+void wolfshim_aes_alloc_count_inc(void) { atomic_fetch_add(&s_aes_alloc_count, 1); }
+#endif
+
+/* -----------------------------------------------------------------------
  * AES_KEY_new / AES_KEY_free — wolfshim extensions (not in OpenSSL 1.1.1)
  *
  * See aes_shim.h §"wolfshim extension: AES_KEY_new / AES_KEY_free" and
@@ -768,10 +788,12 @@ int AES_wrap_key(AES_KEY *key, const unsigned char *iv,
  * ----------------------------------------------------------------------- */
 AES_KEY *AES_KEY_new(void)
 {
-    AES_KEY *key = (AES_KEY *)XMALLOC(sizeof(AES_KEY), NULL, DYNAMIC_TYPE_AES);
-    if (key)
-        memset(key, 0, sizeof(AES_KEY));
-    return key;
+    /* calloc rather than XMALLOC: the outer AES_KEY struct is a public OpenSSL
+     * concept, not a wolfCrypt internal.  Using libc calloc keeps it out of the
+     * wolfCrypt allocator, consistent with SHA*_CTX_new and with how OpenSSL
+     * itself allocates public structs.  The inner wolfCrypt Aes context (alloc'd
+     * later by AES_set_*_key via aes_ctx_alloc) correctly uses XMALLOC. */
+    return (AES_KEY *)calloc(1, sizeof(AES_KEY));
 }
 
 void AES_KEY_free(AES_KEY *key)
@@ -779,7 +801,7 @@ void AES_KEY_free(AES_KEY *key)
     if (!key)
         return;
     aes_ctx_free(key);  /* frees inner wolfCrypt Aes and zeros both pointer slots */
-    XFREE(key, NULL, DYNAMIC_TYPE_AES);
+    free(key);          /* frees outer AES_KEY struct (paired with calloc in AES_KEY_new) */
 }
 
 /* -----------------------------------------------------------------------

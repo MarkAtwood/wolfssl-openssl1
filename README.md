@@ -962,6 +962,20 @@ git commit -m "chore: bump wolfssl submodule to <new-tag>"
 
 ---
 
+## Commercial Support and Licensing
+
+wolfSSL Inc. provides commercial support, consulting, integration services,
+non-recurring engineering (NRE), and porting work for this project and for
+wolfSSL itself.  Commercial licenses for wolfSSL are also available.
+
+| Need | Contact |
+|------|---------|
+| General questions, porting, FIPS | facts@wolfssl.com |
+| Commercial licensing | licensing@wolfssl.com |
+| Technical support | support@wolfssl.com |
+| Phone | +1 (425) 245-8247 |
+| Web | https://www.wolfssl.com/contact/ |
+
 ## License
 
 ### This shim (MIT)
@@ -1110,6 +1124,29 @@ is intentional.
 ```bash
 gcc -DWOLFSHIM_DEBUG ... shim/src/aliases/aliases.c
 ```
+
+## TODO
+
+- [ ] **Non-x86 processor support.** The shim is currently built and tested
+  only on x86-64.  Validate on at least ARM64 (aarch64) and RISC-V.  Key risk
+  areas: the `Aes.reg` / `Aes.left` field-offset probes in `aes_shim.c`, the
+  `_Static_assert` size checks, and any assembly paths in wolfSSL that differ
+  by architecture.  The ABI-check constructor (`wolfshim_abi_check.c`) should
+  catch layout regressions at load time, but a full test-suite run is needed on
+  each new target.
+
+- [ ] **wolfSSL FIPS-ready build.** Verify the shim builds and passes its test
+  suite when wolfSSL is configured with `--enable-fips=ready`.  FIPS-ready mode
+  enables the FIPS self-tests and enforces approved-algorithm restrictions;
+  several `WOLFSHIM_GAP[UNSUPPORTED]` paths (key wrap, certain cipher modes)
+  may behave differently or return different error codes.
+
+- [ ] **wolfSSL FIPS bundle.** Verify the shim against an official wolfSSL FIPS
+  140-3 source bundle (the validated module, not just FIPS-ready).  The FIPS
+  bundle has a fixed, validated source tree; the shim's wolfSSL version guard
+  and `_Static_assert` checks must be re-baselined against the bundle's exact
+  struct layouts.  Document the validated bundle version and certificate number
+  in `ARCHITECTURE.md`.
 
 ## Maintenance Checklist
 

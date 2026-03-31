@@ -126,6 +126,36 @@ int AES_unwrap_key(AES_KEY *key, const unsigned char *iv,
 AES_KEY *AES_KEY_new(void);
 void     AES_KEY_free(AES_KEY *key);
 
+/* -----------------------------------------------------------------
+ * wolfshim diagnostic: AES context allocation counter
+ *
+ * Available only when built with -DWOLFSHIM_DEBUG.
+ *
+ * Returns the total number of wolfCrypt Aes heap allocations made by
+ * AES_set_encrypt_key / AES_set_decrypt_key since process start.
+ * The counter increments on every successful key setup and never
+ * decrements — it is a gross allocation count, not a net live count.
+ *
+ * Interpretation:
+ *   At program startup:           count == 0
+ *   After N key-setup calls:      count == N (expected)
+ *   At steady state, still rising: callers are not calling
+ *     OPENSSL_cleanse or AES_KEY_free; Aes contexts are accumulating.
+ *
+ * To detect leaks: snapshot the counter before and after a known
+ * operation, then compare.  A delta equal to the number of key-setup
+ * calls is expected.  A larger delta (or one observed after the
+ * operation completes) indicates outstanding contexts.
+ *
+ * Not available without WOLFSHIM_DEBUG; returns 0 if called from a
+ * non-debug build (the definition below is a weak stub).
+ * ----------------------------------------------------------------- */
+#ifdef WOLFSHIM_DEBUG
+long wolfshim_aes_ctx_alloc_count(void);
+#else
+static inline long wolfshim_aes_ctx_alloc_count(void) { return 0; }
+#endif
+
 #ifdef __cplusplus
 }
 #endif

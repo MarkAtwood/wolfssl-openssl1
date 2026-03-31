@@ -33,7 +33,7 @@
  * aes_ctx.h for AES_KEY.  Callers that wipe the SHA_CTX before abandonment
  * pay no leak.  Stack-allocated SHA_CTX objects that go out of scope without
  * OPENSSL_cleanse cause an architectural leak of one wolfSSL context per
- * SHA_CTX — see shim/wolfshim.supp for the Valgrind suppression.
+ * SHA_CTX — Valgrind will report these as real leaks; fix the caller.
  *
  * One-shot functions (SHA1, SHA224, …) work directly with heap-allocated
  * wolfSSL contexts and never touch a caller-supplied SHA_CTX, so they do
@@ -253,7 +253,7 @@ int SHA1_Final(unsigned char *md, SHA_CTX *c)
      * SHA1_Init can reinitialise the existing buffer in-place without a
      * malloc.  OPENSSL_cleanse(c, sizeof(*c)) will free it on abandonment.
      * Stack-allocated SHA_CTX objects abandoned without OPENSSL_cleanse
-     * cause an architectural leak — see shim/wolfshim.supp. */
+     * cause a leak; Valgrind will report it. Fix the caller. */
     explicit_bzero(*pp, sizeof(WOLFSSL_SHA_CTX));
     sha1_ctx_set_sentinel(c);  /* sentinel survives Final; Init will reuse */
     return rc;

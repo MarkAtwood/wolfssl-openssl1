@@ -34,9 +34,30 @@
 #include <limits.h>
 
 #ifdef WOLFSHIM_DEBUG
+# include <stdatomic.h>
 # define WOLFSHIM_LOG(name) fprintf(stderr, "[wolfshim] alias: %s called\n", name)
 #else
 # define WOLFSHIM_LOG(name) ((void)0)
+#endif
+
+#ifdef WOLFSHIM_DEBUG
+/*
+ * AES context allocation counter — diagnostic only.
+ *
+ * Counts the total number of wolfCrypt Aes heap allocations made by
+ * AES_set_encrypt_key / AES_set_decrypt_key since process start.
+ * Increments on every successful key setup; does not decrement (frees via
+ * OPENSSL_cleanse and AES_KEY_free happen in different code paths and TUs).
+ *
+ * A counter that grows monotonically and rapidly at steady state indicates
+ * callers are not calling OPENSSL_cleanse or AES_KEY_free, and live wolfCrypt
+ * Aes contexts are accumulating on the heap.
+ *
+ * To read: call wolfshim_aes_ctx_alloc_count() (declared in aes_shim.h).
+ * Declared _Atomic so concurrent AES_set_*_key calls do not produce torn reads.
+ */
+static _Atomic long s_aes_alloc_count = 0;
+long wolfshim_aes_ctx_alloc_count(void) { return s_aes_alloc_count; }
 #endif
 
 /* wolfSSL options must come first to enable all configured features
@@ -239,6 +260,9 @@ int AES_set_encrypt_key(const unsigned char *key, int bits, AES_KEY *schedule)
      * This is not a regression: under WOLFCRYPT_EXCLUDE=1 the BSAES
      * assembly is excluded from the build entirely; the EVP AES path goes
      * through wolfCrypt directly and never reads schedule->rounds. */
+#ifdef WOLFSHIM_DEBUG
+    atomic_fetch_add(&s_aes_alloc_count, 1);
+#endif
     return 0;
 }
 
@@ -258,6 +282,9 @@ int AES_set_decrypt_key(const unsigned char *key, int bits, AES_KEY *schedule)
         return -2;
     }
     /* See AES_set_encrypt_key comment above re: schedule->rounds. */
+#ifdef WOLFSHIM_DEBUG
+    atomic_fetch_add(&s_aes_alloc_count, 1);
+#endif
     return 0;
 }
 

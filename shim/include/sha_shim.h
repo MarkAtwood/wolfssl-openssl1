@@ -75,6 +75,32 @@ extern "C" {
 #define WOLFSHIM_HAS_SHA_CTX_FREE 1
 
 /* -----------------------------------------------------------------
+ * wolfshim diagnostic: SHA context allocation counter
+ *
+ * Available only when built with -DWOLFSHIM_DEBUG.
+ *
+ * Returns the total number of wolfSSL SHA context heap allocations
+ * made by SHA1_Init / SHA224_Init / SHA256_Init / SHA384_Init /
+ * SHA512_Init since process start.  The counter increments on every
+ * fresh malloc (the reuse path after SHA*_Final does not increment)
+ * and never decrements.
+ *
+ * Interpretation mirrors wolfshim_aes_ctx_alloc_count():
+ *   At startup:                    count == 0
+ *   After N distinct Init calls:   count == N (expected)
+ *   Still rising at steady state:  SHA_CTX objects are being
+ *     abandoned without SHA*_CTX_free or OPENSSL_cleanse; wolfSSL
+ *     contexts are accumulating on the heap.
+ *
+ * In non-debug builds returns 0.
+ * ----------------------------------------------------------------- */
+#ifdef WOLFSHIM_DEBUG
+long wolfshim_sha_ctx_alloc_count(void);
+#else
+static inline long wolfshim_sha_ctx_alloc_count(void) { return 0; }
+#endif
+
+/* -----------------------------------------------------------------
  * SHA-1  (OpenSSL type: SHA_CTX)
  * ----------------------------------------------------------------- */
 

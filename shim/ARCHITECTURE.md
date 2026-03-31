@@ -128,7 +128,8 @@ context (because the sentinel and pointer are still set). Either way, relying on
 stack-allocated SHA contexts), or when the next `SHA*_Init` call on that buffer
 is preceded by a `OPENSSL_cleanse`. Stack-allocated `SHA_CTX` objects that go
 out of scope without `OPENSSL_cleanse` leak one wolfSSL context — see
-`wolfshim.supp` for the Valgrind suppression.
+Valgrind will report these as `malloc ← sha*_ctx_alloc ← SHA*_Init`; they are
+real leaks in caller code and should be fixed, not suppressed.
 
 **wolfshim extension:** `SHA_CTX_new()` / `SHA_CTX_free()`,
 `SHA256_CTX_new()` / `SHA256_CTX_free()`, and `SHA512_CTX_new()` /

@@ -228,11 +228,7 @@ OPENSSL_cleanse(&key, sizeof(key));   /* frees the wolfCrypt heap context */
 ```
 
 **Valgrind:** the leak appears as `malloc ← aes_ctx_alloc ← AES_set_encrypt_key`.
-A suppression is provided in `shim/wolfshim.supp`:
-
-```
-valgrind --suppressions=shim/wolfshim.supp --leak-check=full ./binary
-```
+This is a real leak in caller code and should be fixed, not suppressed.
 
 **Performance note:** Because wolfCrypt's `Aes` struct (~1.1 KB) is larger than
 OpenSSL's `AES_KEY` (244 bytes), every `AES_set_encrypt_key` /
@@ -304,7 +300,7 @@ OPENSSL_cleanse(&ctx, sizeof(ctx));   /* frees the wolfSSL heap context */
 ```
 
 **Valgrind:** leaks appear as `malloc ← sha*_ctx_alloc ← SHA*_Init`.
-A suppression is provided in `shim/wolfshim.supp`.
+These are real leaks in caller code and should be fixed, not suppressed.
 
 ---
 

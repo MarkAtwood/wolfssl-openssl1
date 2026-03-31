@@ -39,8 +39,7 @@
  * ------------------
  * A stack-allocated SHA_CTX that goes out of scope without a preceding
  * OPENSSL_cleanse call cannot be intercepted.  The wolfSSL heap allocation
- * leaks.  This is the same constraint as for AES_KEY — see wolfshim.supp for
- * the Valgrind suppression.
+ * leaks.  Valgrind will report these as real leaks; fix the caller.
  *
  * PERFORMANCE NOTE
  * ----------------
